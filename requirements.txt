@@ -1,0 +1,37 @@
+# ===== UI =====
+customtkinter>=5.2.2
+tkcode>=0.1.6
+Pygments>=2.17.2
+
+# ===== LLM (langchain 1.x) =====
+# Use langchain 1.x integrations instead of hand-rolling HTTP. This
+# keeps us in sync with upstream changes (streaming, retries, new
+# model quirks) without re-implementing them.
+langchain>=1.0.0
+langchain-openai>=1.0.0
+langchain-ollama>=1.0.0
+# `openai` is pulled in transitively by langchain-openai; pin a sane
+# floor so we keep the v2.x SDK features.
+openai>=2.0.0
+httpx>=0.27.0
+
+# ===== Database =====
+SQLAlchemy>=2.0.30
+PyMySQL>=1.1.0
+psycopg2-binary>=2.9.9
+oracledb>=2.0.0
+pymongo>=4.7.2
+redis>=5.0.4
+
+# ===== Security =====
+cryptography>=42.0.8
+sqlparse>=0.5.0
+
+# ===== Data =====
+pandas>=2.2.2
+openpyxl>=3.1.2
+
+# ===== Utilities =====
+pydantic>=2.7.1
+loguru>=0.7.2
+python-dotenv>=1.0.1
