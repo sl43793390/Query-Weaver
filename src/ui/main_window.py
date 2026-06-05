@@ -29,7 +29,18 @@ class MainWindow(ctk.CTk):
         # Layout: sidebar | chat panel
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        # Row 0 (toolbar) is a fixed-height strip — it must NOT
+        # have a weight, otherwise any vertical slack in the window
+        # gets absorbed by row 0 and the toolbar grows downward,
+        # leaving a blank gap between the buttons and the
+        # connections panel / tabsheet below.  This bug only showed
+        # up after a theme toggle because `ctk.set_appearance_mode`
+        # re-runs a full layout pass; on the very first launch the
+        # window was already at a height where the 34 px toolbar
+        # happened to fill row 0 exactly, so the gap was invisible.
+        # Row 1 (the actual content area) keeps the weight=1.
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(2, weight=0)
 
         # Top toolbar — tight height that just fits the buttons, not
         # the 40+px that CTk's defaults leave.  The previous version

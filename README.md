@@ -42,6 +42,9 @@
 
 ## Screenshots & UI walkthrough
 
+![new-connection](assets/light-screenshot.png)
+![new-connection](assets/dark-mode.png)
+![new-connection](assets/new-connection.png)
 ```
 ┌─ Query-Weaver ────────────────────────────────────────────────┐
 │  Query-Weaver     [☀ Light]  [▶ Execute Last SQL]  [⚙ Settings]│
