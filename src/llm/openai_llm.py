@@ -102,7 +102,8 @@ class OpenAILLM(BaseLLM):
         from langchain_openai import ChatOpenAI
 
         lc_messages = _to_tuples(messages)
-        _print_request(self.name, self.model, self.base_url, self.api_key, lc_messages)
+        #打印调用llm之前的消息内容
+        # _print_request(self.name, self.model, self.base_url, self.api_key, lc_messages)
 
         # Per-request httpx client with the HTML-reject hook. The hook
         # intercepts non-JSON responses before the openai SDK parses
@@ -128,7 +129,8 @@ class OpenAILLM(BaseLLM):
             http_client.close()
 
         content = str(getattr(response, "content", "") or "")
-        _print_response(self.name, self.model, self.base_url, content)
+        #打印llm返回的内容，用于调试
+        # _print_response(self.name, self.model, self.base_url, content)
         return LLMResponse(content=content, model=self.model)
 
 

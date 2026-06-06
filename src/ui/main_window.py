@@ -18,7 +18,16 @@ class MainWindow(ctk.CTk):
         super().__init__()
 
         self.title(f"{APP_NAME} v{APP_VERSION}")
-        self.geometry(WINDOW_DEFAULT_SIZE)
+        # Centre the window on the primary monitor instead of letting
+        # the window manager pick a default position (which on most
+        # platforms is just below the taskbar / top-left corner, so
+        # the user has to drag the window to use it).  We parse the
+        # "WxH" out of WINDOW_DEFAULT_SIZE and compute the top-left
+        # coordinates from the screen dimensions.  `update_idletasks`
+        # forces winfo_screen{width,height} to be valid before we read
+        # them — without it they can return 1×1 on a freshly-created
+        # window on some platforms.
+        self._center_window(WINDOW_DEFAULT_SIZE)
 
         theme = get_value("ui.theme", DEFAULT_THEME) or DEFAULT_THEME
         if theme not in ("light", "dark"):
@@ -146,6 +155,15 @@ class MainWindow(ctk.CTk):
         # Chat panel (must exist before the sidebar can call back into it)
         self.chat_panel = ChatPanel(self, on_status=self._set_status)
         self.chat_panel.grid(row=1, column=1, sticky="nsew")
+        # Prime the chat panel's appearance state.  ChatPanel.__init__
+        # hard-codes `_appearance_mode = "dark"`, which then leaks into
+        # every `MarkdownView(mode="dark", ...)` it creates — leaving
+        # the message content area with dark-on-light or dark-on-dark
+        # colours on a light-theme first launch.  `apply_theme` re-tints
+        # the sash, the history frame, the result viewer, and (for
+        # bubbles added *after* this call) caches the correct mode so
+        # subsequent MarkdownView instances pick the right palette.
+        self.chat_panel.apply_theme(theme)
 
         # Sidebar (last, so its on_connection_changed callback is safe)
         self.sidebar = Sidebar(
@@ -155,8 +173,50 @@ class MainWindow(ctk.CTk):
             on_schema_focus=self._on_schema_focus,
         )
         self.sidebar.grid(row=1, column=0, sticky="nsew")
+        # Prime the sidebar's `tk.Listbox` (and the nested SchemaTree)
+        # with the *current* theme.  The Sidebar's `__init__` still
+        # hard-codes `_current_mode = "dark"` for the initial Listbox
+        # config, so without this priming call the connections frame
+        # would render with dark-mode colours on a light-theme first
+        # launch (and stay that way until the user toggled the theme
+        # once).  `apply_theme` is the single source of truth for
+        # re-styling tk.Listbox / ttk.Treeview, so we just call it
+        # here with the same `theme` value `__init__` used to set
+        # `ctk.set_appearance_mode` on the first line.
+        self.sidebar.apply_theme(theme)
 
         self.grid_rowconfigure(1, weight=1)
+
+    # ------------------------------------------------------------------ #
+    def _center_window(self, size: str) -> None:
+        """Apply `size` ("WxH" or "WxH±X±Y") and centre the window on
+        the primary monitor.  Computes the top-left X/Y from
+        `winfo_screen{width,height}` so the title bar sits in the
+        middle of the visible desktop, not wherever the window
+        manager happens to drop it.
+
+        The `max(0, …)` clamp handles the edge case where the
+        window is larger than the screen (e.g. user picked a 4K
+        resolution but the constant still says 1920×1080 and a
+        future bump goes the other way) — we'd rather push the
+        window flush to the top-left than request a negative
+        coordinate that the WM would silently clamp anyway.
+        """
+        import re
+        m = re.match(r"^(\d+)x(\d+)$", size.strip())
+        if not m:
+            # Fallback: let Tk pick a position itself.
+            self.geometry(size)
+            return
+        win_w, win_h = int(m.group(1)), int(m.group(2))
+        # update_idletasks ensures winfo_screen* are real numbers
+        # (they can be 1x1 on a not-yet-mapped toplevel).
+        self.update_idletasks()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        x = max(0, (screen_w - win_w) // 2)
+        y = max(0, (screen_h - win_h) // 2)
+        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
     # ------------------------------------------------------------------ #
     def _on_connection_changed(self, profile: ConnectionProfile | None) -> None:
