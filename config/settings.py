@@ -20,7 +20,7 @@ KEY_FILE_PATH = CONFIG_DIR / ".key"
 # ----- UI Defaults -----
 APP_NAME = "Query-Weaver"
 APP_VERSION = "0.1.0"
-WINDOW_DEFAULT_SIZE = "1280x800"
+WINDOW_DEFAULT_SIZE = "1680x900"
 THEMES = ("light", "dark")
 DEFAULT_THEME = "dark"
 

@@ -78,6 +78,16 @@ class ResultViewer(ctk.CTkFrame):
         vsb.grid(row=2, column=1, sticky="ns")
         hsb.grid(row=3, column=0, sticky="ew", padx=8)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        # Right-click on a cell → context menu with "Copy" that puts
+        # *that* cell's value on the clipboard.  Binding on
+        # `self.tree` (not on the parent frame) keeps the gesture
+        # scoped to the result table — clicking the toolbar, the
+        # page label, or the scrollbars won't trigger the menu.
+        # We accept <Button-3> (Win/Linux), <Button-2> and
+        # <Control-Button-1> (mac) so the gesture works on every
+        # platform the user might be on.
+        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            self.tree.bind(seq, self._on_tree_right_click)
 
     # ------------------------------------------------------------------ #
     def apply_theme(self, mode: str) -> None:
@@ -208,3 +218,63 @@ class ResultViewer(ctk.CTkFrame):
             messagebox.showinfo("Export", f"Saved to {path}")
         except Exception as exc:
             messagebox.showerror("Export", f"Failed: {exc}")
+
+    # ------------------------------------------------------------------ #
+    # Right-click context menu — copy a single cell to clipboard.
+    # ------------------------------------------------------------------ #
+    def _on_tree_right_click(self, event) -> None:
+        """Show a "Copy" context menu for the cell under the cursor.
+
+        ttk.Treeview gives us two helpers for hit-testing:
+          * `identify_row(y)` → the iid of the row under `y`, or "" if
+            the user clicked the empty area below the last row.
+          * `identify_column(x)` → a column id string like "#1",
+            "#2", ... (with `show="headings"` columns start at "#1"
+            and the "#0" pseudo-column is the indent column, which
+            we don't render — so the user can never click it).  We
+            strip the leading "#" and subtract 1 to get the index
+            into the row's `values` tuple.
+
+        If either helper returns nothing (e.g. right-click on the
+        empty padding below the last row) we silently bail out —
+        popping a menu with nothing to copy would be confusing.
+        """
+        row_id = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)
+        if not row_id or not col_id:
+            return
+        # Column id format: "#1", "#2", ... → index 0, 1, ...
+        try:
+            col_idx = int(col_id[1:]) - 1
+        except ValueError:
+            return
+        values = self.tree.item(row_id, "values")
+        if not values or col_idx < 0 or col_idx >= len(values):
+            return
+        cell_value = str(values[col_idx])
+        # Default-arg trick binds the *current* cell_value into the
+        # lambda so a rapid second right-click on a different cell
+        # doesn't race against the closure.
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="Copy",
+            command=lambda v=cell_value: self._copy_cell_to_clipboard(v),
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_cell_to_clipboard(self, text: str) -> None:
+        """Push `text` to the OS clipboard.
+
+        `clipboard_clear` is required — `clipboard_append` alone
+        *adds* to whatever is already on the clipboard, so the
+        second copy would otherwise contain the first copy's text
+        + the new one.  `self.update()` is a Windows quirk: the
+        clipboard ownership change needs the event loop to process
+        the request, otherwise the contents vanish on app exit.
+        """
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()

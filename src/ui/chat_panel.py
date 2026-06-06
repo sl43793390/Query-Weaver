@@ -1,6 +1,7 @@
 """Right-side chat panel: user / assistant messages, SQL extraction, execution."""
 from __future__ import annotations
 
+import re
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -88,7 +89,22 @@ class ChatPanel(ctk.CTkFrame):
             chat_tab, label_text="Conversation"
         )
         self.history_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        # Two equal-weight columns: col 0 holds AI / system bubbles
+        # (flush left), col 1 holds user bubbles (flush right).
+        # Each bubble gets its own *row* (see `_history_row` below)
+        # so the empty half-column doesn't intrude on the bubble's
+        # vertical position.  We use sticky="w" / "e" to anchor
+        # the bubble to the *outer* edge of its column, so a short
+        # reply is a small bubble, not a full half-width slab.
+        self.history_frame.grid_columnconfigure(0, weight=1)
+        self.history_frame.grid_columnconfigure(1, weight=1)
         self._history_widgets: list[ctk.CTkFrame] = []
+        # Monotonic row counter.  tkinter's grid manager would
+        # auto-assign rows if we let it, but that interleaves
+        # user/assistant into adjacent cells of the SAME row, which
+        # is the exact layout we're avoiding.  Tracking the row
+        # explicitly keeps every message on its own line.
+        self._history_row: int = 0
 
         input_bar = ctk.CTkFrame(chat_tab, fg_color="transparent")
         input_bar.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 4))
@@ -168,6 +184,10 @@ class ChatPanel(ctk.CTkFrame):
             except tk.TclError:
                 pass
         self._history_widgets.clear()
+        # Reset the row counter too — otherwise the next message
+        # would land at `row = len(before-clear) + 1` and sit
+        # below an empty gap.
+        self._history_row = 0
         # Re-show a fresh empty-state hint so the user knows the chat
         # was cleared on purpose, not by a bug.
         if self._profile is not None:
@@ -326,7 +346,27 @@ class ChatPanel(ctk.CTkFrame):
             corner_radius=14,
         )
         bubble._role = role  # stashed so apply_theme() can re-style
-        bubble.grid(sticky="ew", padx=4, pady=4)
+        # Left/right layout: AI/system bubbles go in column 0
+        # (anchored to the LEFT edge); user bubbles go in column 1
+        # (anchored to the RIGHT edge).  This is the chat-style
+        # "assistant on the left, you on the right" arrangement
+        # the user asked for.  Each bubble gets a unique row so
+        # the empty half-column on the opposite side of the row
+        # doesn't compress the bubble's height.
+        if role == "user":
+            col, sticky = 1, "e"   # user → right column, flush right
+            label_anchor = "e"     # "🧑 You" hugs the right edge
+        else:
+            col, sticky = 0, "w"   # assistant / system → left, flush left
+            label_anchor = "w"
+        # Pin the bubble to its assigned cell, then let it size to
+        # its content (no `width=`, so the bubble's width is the
+        # MarkdownView's text-wrap width — the longest unbroken
+        # line up to the column's allotted half-width).  `sticky`
+        # alone is enough to push a short bubble to the outer edge.
+        row = self._history_row
+        self._history_row += 1
+        bubble.grid(row=row, column=col, sticky=sticky, padx=4, pady=4)
         bubble.grid_columnconfigure(0, weight=1)
         # Row 0 = label (fixed), row 1 = MarkdownView (grows with content).
         bubble.grid_rowconfigure(0, weight=0)
@@ -335,16 +375,119 @@ class ChatPanel(ctk.CTkFrame):
         label = ctk.CTkLabel(
             bubble,
             text=("🧑 You" if role == "user" else "🤖 Assistant" if role == "assistant" else "ℹ System"),
-            anchor="w", font=("", 12, "bold"),
+            anchor=label_anchor, font=("", 12, "bold"),
             text_color=self._LABEL_COLORS[role],
         )
-        label.grid(row=0, column=0, sticky="w", padx=12, pady=(8, 0))
+        # `sticky="ew"` lets the label fill the bubble's width
+        # so its text is justified to whichever side the bubble
+        # is anchored to (left for AI, right for user).  The
+        # `anchor=` parameter on CTkLabel only positions the text
+        # INSIDE the label; `sticky` controls the label's slot.
+        label.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 0))
 
         md = MarkdownView(bubble, mode=mode, bd=0, highlightthickness=0)
         md.grid(row=1, column=0, sticky="nsew", padx=12, pady=(2, 10))
         md.set_markdown(text)
         self._fit_markdown(md)
+        # Right-click → context menu with "Copy".  The raw markdown
+        # (not the rendered plain text) is stashed on the bubble so
+        # the menu handler can put it on the clipboard verbatim —
+        # this is what the user almost always wants: preserving
+        # ```sql fenced``` blocks exactly as the LLM wrote them,
+        # rather than the already-stripped rendering.
+        bubble._message_text = text
+        # Bind on the bubble AND on its visible children so a
+        # right-click *anywhere* inside the bubble opens the menu,
+        # not just on a 1-px sliver of background.  We use a
+        # `lambda e, b=bubble:` default-arg trick to bind the
+        # current value of `bubble` rather than the loop variable.
+        for w in (bubble, label, md):
+            w.bind(
+                "<Button-3>",
+                lambda e, b=bubble: self._show_bubble_menu(e, b),
+            )
+            # macOS users (or trackpad two-finger tap on Windows)
+            # send <Button-2> or <Control-Button-1>; we accept both
+            # so the menu also opens in those cases.
+            w.bind(
+                "<Button-2>",
+                lambda e, b=bubble: self._show_bubble_menu(e, b),
+            )
+            w.bind(
+                "<Control-Button-1>",
+                lambda e, b=bubble: self._show_bubble_menu(e, b),
+            )
         return bubble
+
+    # ------------------------------------------------------------------ #
+    # Right-click context menu for message bubbles
+    # ------------------------------------------------------------------ #
+    def _show_bubble_menu(self, event, bubble) -> None:
+        """Pop up a tiny menu with a Copy command.  The menu is a
+        throwaway `tk.Menu` — it has to be `tearoff=0` (no detachable
+        top strip) and we explicitly `grab_release` in a `finally`
+        so it doesn't leave the main window in a stuck state if
+        something throws."""
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Copy", command=lambda: self._copy_bubble(bubble))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_bubble(self, bubble) -> None:
+        """Copy the bubble's original markdown text to the system
+        clipboard.  We copy from the *stash* (`_message_text`)
+        rather than reading the rendered Text widget, so the
+        clipboard gets the exact markdown the LLM produced — code
+        fences, tables, lists, all intact.  `self.update()` after
+        `clipboard_append` is a Windows quirk: the contents are
+        lost on app exit unless the event loop is given a chance
+        to process the clipboard ownership change."""
+        text = getattr(bubble, "_message_text", "")
+        if not text:
+            return
+        text = self._strip_code_fences(text)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Remove ```lang ... ``` fenced-code markers from `text`,
+        keeping the code body and any surrounding prose intact.
+
+        Rationale: when the user right-clicks an assistant bubble
+        and hits "Copy", the most common intent is to grab a SQL
+        block and paste it into the editor.  If we left the
+        ```sql / ``` markers in place, the pasted string would
+        include those fence lines — and pasting that into a SQL
+        editor (or running it via the ▶ button) would fail with
+        a syntax error.  Stripping the fences gives the user
+        *executable* SQL while preserving the prose around the
+        code block (the LLM's explanation is still useful).
+
+        Behaviour:
+          * ```sql\\nSELECT 1;\\n```   →   SELECT 1;
+          * ```\\nSELECT 1;\\n```      →   SELECT 1;
+          * ```sql\\nA\\nB\\n```       →   A\\nB
+          * Inline `code` is NOT touched (single-backticks, no
+            language tag, no closing line).
+          * Prose outside fenced blocks is NOT touched.
+
+        Implementation uses a regex over the canonical markdown
+        fence pattern: opening line is ` ``` ` optionally followed
+        by a language tag (letters/digits/underscore), the body is
+        any chars (non-greedy), the closing line is ` ``` ` on its
+        own.  `re.DOTALL` lets the body span newlines.  We strip
+        the trailing newline from the body so the copied text
+        doesn't gain a phantom blank line after the SQL.
+        """
+        fence_re = re.compile(
+            r"```[A-Za-z0-9_+\-]*\r?\n(.*?)\r?\n```",
+            re.DOTALL,
+        )
+        return fence_re.sub(lambda m: m.group(1).rstrip("\r\n"), text)
 
     def _fit_markdown(self, md: MarkdownView) -> None:
         """Resize a MarkdownView to fit its rendered content.
@@ -548,7 +691,7 @@ class ChatPanel(ctk.CTkFrame):
                     f"- Open Settings → ⚙ and update the model / base URL if needed\n"
                     f"- See `logs/app.log` for the full request / response trace"
                 )
-            self.after(0, lambda: self._finish_placeholder(placeholder, content))
+            self.after(0, lambda: self._finish_placeholder(placeholder, content, auto_execute=True))
             self._messages.append(LLMMessage("assistant", content))
         except Exception as exc:
             logger.exception("LLM call failed")
@@ -559,9 +702,17 @@ class ChatPanel(ctk.CTkFrame):
             if self.on_status:
                 self.after(0, lambda: self.on_status("Ready"))
 
-    def _finish_placeholder(self, widget, text: str) -> None:
+    def _finish_placeholder(self, widget, text: str, *, auto_execute: bool = False) -> None:
         """Replace the spinner bubble with the real response and stop
-        the spinner animation. Safe to call from the UI thread only."""
+        the spinner animation. Safe to call from the UI thread only.
+
+        `auto_execute=True` is set on the *success* path from
+        `_call_llm`; on the error path it's left False so we never
+        try to "execute" an exception traceback.  The actual
+        auto-execute decision (SELECT vs not) lives in
+        `_maybe_auto_execute` — this flag just gates whether we even
+        look at the response.
+        """
         if hasattr(self, "_spinner_after"):
             try:
                 self.after_cancel(self._spinner_after)
@@ -570,6 +721,8 @@ class ChatPanel(ctk.CTkFrame):
             self._spinner_after = None
         self._spinner_i = 0
         self._update_last_assistant(widget, text)
+        if auto_execute:
+            self._maybe_auto_execute(text)
 
     def _update_last_assistant(self, widget, text: str) -> None:
         # `widget` may be None (caller forgot to return it) or may have
@@ -588,6 +741,15 @@ class ChatPanel(ctk.CTkFrame):
                     self._fit_markdown(child)
                 except tk.TclError:
                     return
+                # Keep the right-click "Copy" stash in sync with the
+                # visible content.  The stash is set in
+                # `_build_message_bubble` to whatever text the bubble
+                # was *born* with — for the spinner→real-response
+                # swap that's `"⠋ Thinking…"`, which would otherwise
+                # stay on the bubble forever and get copied instead
+                # of the actual LLM reply.  Updating it here means
+                # whichever text the user sees is the text they get.
+                widget._message_text = text
                 # Re-scroll after the bubble's content changes so the
                 # user still sees the bottom (most important for the
                 # spinner → real-response swap).
@@ -597,6 +759,46 @@ class ChatPanel(ctk.CTkFrame):
     # ------------------------------------------------------------------ #
     # SQL extraction & execution helpers
     # ------------------------------------------------------------------ #
+    def _is_read_only_sql(self, sql: str) -> bool:
+        """True iff `sql` is a single read-only statement (SELECT /
+        WITH / SHOW / EXPLAIN / DESCRIBE / DESC) and is therefore
+        safe to run without asking.
+
+        We force `read_only=True` on the SQL guard on purpose:
+        even if the active profile is read-write, we never want to
+        auto-run a CREATE / INSERT / UPDATE / DELETE that the LLM
+        slipped into its response.  The user can still run those
+        manually via the ▶ button.
+        """
+        if self._profile is None:
+            return False
+        try:
+            report = analyze(sql, db_type=self._profile.db_type, read_only=True)
+        except Exception:
+            return False
+        return report.allowed
+
+    def _maybe_auto_execute(self, text: str) -> None:
+        """Auto-run the SQL in `text` if it is exactly one read-only
+        statement.  Multiple blocks → don't auto-run (let the user
+        pick).  Modification / DDL / unparseable → don't auto-run
+        (let the user click ▶).  No connection → don't auto-run.
+        """
+        if self._profile is None:
+            return
+        sqls = extract_code_blocks(text)
+        # Strictly *one* block: the model's typical response is
+        # "Here's the query:\n```sql\nSELECT …\n```\nIt returns…".
+        # If it gives alternatives we don't want to guess.
+        if len(sqls) != 1:
+            return
+        if not self._is_read_only_sql(sqls[0]):
+            return
+        # `_run_sql` already handles errors, confirmation, and the
+        # "read-only profile + non-SELECT" path.  For a SELECT it
+        # goes straight through to the result viewer.
+        self._run_sql(sqls[0])
+
     def execute_last_sql(self) -> None:
         """Extract SQL from the conversation and run it.
 
